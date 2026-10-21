@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+<title>the-log</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d1d1b'/%3E%3Cpath d='M9 11h14M9 16h14M9 21h8' stroke='%23faf9f6' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #faf9f6;
+    --fg: #1d1d1b;
+    --muted: #8a877f;
+    --line: #e6e3dc;
+    --field: #ffffff;
+    --accent: #1d1d1b;
+    --accent-fg: #faf9f6;
+    --danger: #b3261e;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161614;
+      --fg: #e8e6e1;
+      --muted: #85827a;
+      --line: #2c2b28;
+      --field: #1f1f1c;
+      --accent: #e8e6e1;
+      --accent-fg: #161614;
+      --danger: #f2b8b5;
+      color-scheme: dark;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #log {
+    flex: 1;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .wrap { max-width: 40rem; margin: 0 auto; padding: 0 16px; }
+  /* Few entries sit just above the input, like the tail of a log. */
+  #entries { min-height: 100%; display: flex; flex-direction: column; justify-content: flex-end; padding-bottom: 12px; }
+
+  .day { margin: 0; padding: 28px 0 6px; }
+  .day h2 {
+    margin: 0 0 6px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .02em;
+    color: var(--muted);
+  }
+  .entry {
+    display: grid;
+    grid-template-columns: 3.25rem 1fr;
+    gap: 0 12px;
+    padding: 5px 0;
+  }
+  .entry time {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 24px;
+    font-variant-numeric: tabular-nums;
+  }
+  .entry p {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .entry.new { animation: arrive .35s ease-out; }
+  @keyframes arrive { from { opacity: 0; transform: translateY(4px); } }
+
+  .empty {
+    margin: auto 0;
+    text-align: center;
+    color: var(--muted);
+  }
+
+  form {
+    border-top: 1px solid var(--line);
+    background: var(--bg);
+    padding: 12px 0 max(12px, env(safe-area-inset-bottom));
+  }
+  .composer {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+  }
+  textarea {
+    flex: 1;
+    min-width: 0;
+    resize: none;
+    max-height: 40vh;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--field);
+    color: var(--fg);
+    font: inherit;
+    outline: none;
+  }
+  textarea:focus { border-color: var(--muted); }
+  textarea::placeholder { color: var(--muted); }
+
+  button {
+    flex: none;
+    height: 46px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--field);
+    color: var(--fg);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; }
+  #save { padding: 0 18px; background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  #save:disabled { opacity: .35; cursor: default; }
+
+  #status {
+    min-height: 18px;
+    margin: 6px 0 0;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  #status.error { color: var(--danger); }
+</style>
+</head>
+<body>
+
+<main id="log" aria-live="polite"><div class="wrap" id="entries"></div></main>
+
+<form id="form" autocomplete="off"><div class="wrap">
+  <div class="composer">
+    <textarea id="text" rows="1" placeholder="Log anything…" enterkeyhint="send" aria-label="New entry" autofocus></textarea>
+    <button type="submit" id="save" disabled>Save</button>
+  </div>
+  <p id="status"></p>
+</div></form>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const logEl = $("log"), entriesEl = $("entries"), form = $("form");
+  const textEl = $("text"), saveEl = $("save"), statusEl = $("status");
+
+  const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+  let entries = [];
+
+  // "Thu 22 Oct 2026", the same day header the shell prints. The date is
+  // taken from the timestamp as written, not shifted to this browser's zone.
+  function dayLabel(day) {
+    const [y, m, d] = day.split("-").map(Number);
+    return `${DOW[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]} ${d} ${MON[m - 1]} ${y}`;
+  }
+
+  // justSaved: animate the last entry and scroll to it.
+  function render(justSaved) {
+    const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
+    entriesEl.replaceChildren();
+    if (entries.length === 0) {
+      const p = document.createElement("p");
+      p.className = "empty";
+      p.textContent = "Nothing logged yet.";
+      entriesEl.append(p);
+      return;
+    }
+    let section, prev;
+    entries.forEach((e, i) => {
+      const day = e.ts.slice(0, 10);
+      if (day !== prev) {
+        section = document.createElement("section");
+        section.className = "day";
+        const h = document.createElement("h2");
+        h.textContent = dayLabel(day);
+        section.append(h);
+        entriesEl.append(section);
+        prev = day;
+      }
+      const row = document.createElement("div");
+      row.className = "entry" + (justSaved && i === entries.length - 1 ? " new" : "");
+      const t = document.createElement("time");
+      t.dateTime = e.ts;
+      t.textContent = e.ts.slice(11, 16);
+      const p = document.createElement("p");
+      p.textContent = e.text;
+      row.append(t, p);
+      section.append(row);
+    });
+    if (atBottom || justSaved) logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function setStatus(msg, isError) {
+    statusEl.textContent = msg || "";
+    statusEl.classList.toggle("error", !!isError);
+  }
+
+  async function load() {
+    try {
+      const res = await fetch("/api/entries");
+      if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+      entries = await res.json();
+      render();
+    } catch (err) {
+      setStatus("Couldn't load the log: " + err.message, true);
+    }
+  }
+
+  function fit() {
+    textEl.style.height = "auto";
+    textEl.style.height = textEl.scrollHeight + 2 + "px";
+    saveEl.disabled = textEl.value.trim() === "";
+  }
+
+  async function save() {
+    const text = textEl.value;
+    if (text.trim() === "") return;
+    // Clear the box right away so the next thought can start; if the save
+    // fails, the text comes back ahead of anything typed since.
+    textEl.value = "";
+    fit();
+    try {
+      const res = await fetch("/api/entries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || res.statusText);
+      entries.push(body);
+      setStatus("");
+      render(true);
+    } catch (err) {
+      textEl.value = textEl.value ? text + "\n" + textEl.value : text;
+      fit();
+      setStatus("Not saved: " + err.message, true);
+    }
+    textEl.focus();
+  }
+
+  form.addEventListener("submit", (e) => { e.preventDefault(); save(); });
+  textEl.addEventListener("input", fit);
+  // Enter saves, Shift+Enter starts a new line.
+  textEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      save();
+    }
+  });
+  // Pick up entries written from the shell while this tab was away.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") load();
+  });
+
+  fit();
+  load();
+</script>
+</body>
+</html>
